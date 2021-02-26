@@ -1,0 +1,256 @@
+// Code your testbench here
+// or browse Examples
+
+
+class basic;
+ bit rst;
+ bit [3:0]count;
+endclass
+
+class generator;
+basic pkt;
+mailbox gen2drv;
+
+function new(basic pkt,mailbox gen2drv);
+this.pkt=pkt;
+this.gen2drv=gen2drv;
+endfunction
+
+task run();
+$display("gen");
+repeat(10) begin
+pkt=new();
+void'(pkt.randomize() with {rst==0;});
+gen2drv.put(pkt);
+end
+endtask
+endclass
+
+class driver;
+basic pkt;
+mailbox gen2drv;
+virtual intf vif;
+
+function new(basic pkt,mailbox gen2drv,virtual intf vif);
+this.pkt =pkt;
+this.gen2drv=gen2drv;
+this.vif=vif;
+endfunction
+
+task run();
+$display("drv");
+forever begin
+pkt=new();
+gen2drv.get(pkt);
+vif.rst=pkt.rst;
+end
+endtask
+endclass
+
+class monitor1;
+basic pkt;
+mailbox m12cov;
+mailbox m12ref;
+virtual intf vif;
+
+function new(basic pkt,mailbox m12cov,mailbox m12ref,virtual intf vif);
+this.pkt=pkt;
+this.m12cov=m12cov;
+this.m12ref=m12ref;
+this.vif=vif;
+endfunction
+
+task run();
+$display("m1");
+pkt=new();
+forever begin
+  @(vif.cb)
+pkt.rst=vif.rst;
+m12cov.put(pkt);
+m12ref.put(pkt);
+end
+endtask
+endclass
+
+
+class monitor2;
+basic pkt;
+mailbox m22sb;
+virtual intf vif;
+
+function new(basic pkt,mailbox m22sb,virtual intf vif);
+this.pkt=pkt;
+this.m22sb=m22sb;
+this.vif=vif;
+endfunction
+
+task run();
+$display("m2");
+pkt=new();
+forever begin
+  @(vif.cb)
+pkt.count=vif.count;
+m22sb.put(pkt);
+end
+endtask
+endclass
+
+
+class coverage;
+basic pkt;
+mailbox m12cov;
+
+covergroup cg;
+c1: coverpoint pkt.rst
+{
+    bins b1={0};
+    bins b2={1};
+}
+endgroup
+
+function new(basic pkt,mailbox m12cov);
+cg=new();
+this.pkt=pkt;
+this.m12cov=m12cov;
+endfunction
+
+task run();
+pkt=new();
+$display("cov");
+forever begin
+m12cov.get(pkt);
+cg.sample();
+end
+endtask
+endclass
+
+class ref_model;
+basic pkt;
+mailbox m12ref;
+mailbox ref2sb;
+
+function new(basic pkt,mailbox m12ref,mailbox ref2sb);
+this.pkt=pkt;
+this.m12ref=m12ref;
+this.ref2sb=ref2sb;
+endfunction
+
+task run();
+$display("ref");
+pkt=new();
+forever begin
+m12ref.get(pkt);
+if(pkt.rst)
+pkt.count=4'b0000;
+else
+pkt.count=pkt.count+1;
+ref2sb.put(pkt);
+end
+endtask
+endclass
+
+class s_b;
+basic pkt1,pkt2;
+mailbox ref2sb;
+mailbox m22sb;
+
+function new(basic pkt1,pkt2,mailbox ref2sb,mailbox m22sb);
+this.pkt1=pkt1;
+this.pkt2=pkt2;
+this.ref2sb=ref2sb;
+this.m22sb=m22sb;
+endfunction
+
+task run();
+$display("sb");
+forever begin
+ref2sb.get(pkt1);
+m22sb.get(pkt2);
+  if(pkt2.count==pkt1.count)
+$display("count done pkt1.count=%0b pkt2.count=%0b",pkt1.count,pkt2.count);
+else
+$display("count fail pkt1.count=%0b pkt2.count=%0b",pkt1.count,pkt2.count);
+end
+endtask
+endclass
+
+
+program tb1(intf.tb vif);
+
+basic pkt1,pkt2;
+generator gen;
+driver drv;
+monitor1 m1;
+monitor2 m2;
+coverage c;
+ref_model rm;
+s_b sb;
+mailbox gen2drv,m12cov,m12ref,ref2sb,m22sb;
+
+initial begin
+pkt1=new();
+pkt2=new();
+gen2drv=new();
+m12cov=new();
+m12ref=new();
+ref2sb=new();
+m22sb=new();
+gen=new(pkt1,gen2drv);
+drv=new(pkt1,gen2drv,vif);
+m1=new(pkt1,m12cov,m12ref,vif);
+m2=new(pkt2,m22sb,vif);
+c=new(pkt1,m12cov);
+rm=new(pkt1,m12ref,ref2sb);
+sb=new(pkt1,pkt2,ref2sb,m22sb);
+end
+
+initial begin
+fork
+gen.run();
+drv.run();
+m1.run();
+m2.run();
+c.run();
+rm.run();
+sb.run();
+join
+end
+endprogram
+
+interface intf(input bit clk);
+logic rst;
+logic [3:0]count;
+
+clocking cb @(posedge clk);
+default input #1ns output #1ns;
+input clk,count;
+output rst;
+endclocking
+
+modport dut(input clk,rst,output count);
+modport tb(input count,clk,output rst);
+
+endinterface
+
+module cnt(intf.dut vif);
+always @(posedge vif.clk)
+begin
+if(vif.rst==1)
+vif.count<=4'b0;
+else 
+vif.count<=vif.count+1;
+end
+endmodule
+
+module tp1;
+bit clk;
+initial
+forever #5 clk=~clk;
+intf vif(clk);
+cnt d1(vif);
+tb1 tt(vif);
+ initial begin
+    #50;
+    $finish;
+  end
+endmodule
